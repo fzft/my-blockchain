@@ -1,11 +1,11 @@
 package main
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
-	"strconv"
+	"github.com/ethereum/go-ethereum/crypto"
+	"log"
 	"strings"
+	"time"
 )
 
 type Block struct {
@@ -14,6 +14,8 @@ type Block struct {
 	previousHash string
 	hash string
 	nonce int
+
+	merKleRoot string
 }
 
 // NewBlock creates and returns a new block
@@ -24,18 +26,51 @@ func NewBlock(timestamp int64, transactions []*Transaction, previousHash string)
 		previousHash: previousHash,
 		nonce: 0,
 	}
-	block.hash = block.calculateHash()
+
+	// exclude genesis block
+	if previousHash != "0" {
+		block.merKleRoot = block.getMerKleRoot()
+		block.hash = block.calculateHash()
+	}
+
 	return block
 }
 
+
+// isTransactionIn checks if a transaction is in a block
+func (b *Block) isTransactionIn(transaction *Transaction) bool {
+	tree := b.buildMerKleTree()
+	_, in := TraverseMerkleTree(tree, transaction.getTransactionByteData())
+	return in
+}
+
+
+func (b *Block) buildMerKleTree() *MerkleTree {
+	log.Printf("start to build tree")
+	var txBytes [][]byte
+	for _, tx := range b.transactions {
+		txBytes = append(txBytes, tx.getTransactionByteData())
+	}
+	tree := NewMerkleTree(txBytes)
+	log.Println("build tree success")
+	return tree
+}
+
+// getMerKleRoot returns the merkle root of a block
+func (b *Block) getMerKleRoot() string {
+	tree := b.buildMerKleTree()
+	rootData := GetMerkleRoot(tree)
+	return hex.EncodeToString(rootData)
+}
+
+// getBlockByteData returns the byte data of a block, use merkle tree to optimize
 func (b *Block) getBlockByteData() []byte {
-	txBytes , _ := json.Marshal(b.transactions)
-	return []byte(  string(b.previousHash) + strconv.Itoa(int(b.timestamp) ) + string(txBytes)   + strconv.Itoa(b.nonce))
+	return []byte(string(b.nonce)  +  b.merKleRoot)
 }
 
 func (b *Block) calculateHash() string {
-	hash := sha256.Sum256(b.getBlockByteData())
-	return hex.EncodeToString(hash[:])
+	hash := crypto.Keccak256Hash(b.getBlockByteData())
+	return hex.EncodeToString(hash[:])[2:]
 }
 
 func (b *Block) mineBlock(difficulty int) {
@@ -46,6 +81,7 @@ func (b *Block) mineBlock(difficulty int) {
 	for !strings.HasPrefix(b.hash, prefix) {
 		b.nonce++
 		b.hash = b.calculateHash()
+		time.Sleep(time.Millisecond * 100)
 	}
 }
 

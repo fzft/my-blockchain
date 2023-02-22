@@ -1,120 +1,114 @@
 package main
 
 import (
-	"crypto/ecdsa"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/asn1"
-	"encoding/pem"
-	"errors"
 	"fmt"
-	"math/big"
+	"github.com/btcsuite/btcd/btcec/v2"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
+	"log"
 	"strconv"
 	"time"
 )
 
 type Transaction struct {
-	Sender    *string  // the address of the sender
-	Recipient string  // the address of the recipient
-	Amount    float64 // the amount being transferred
-	Timestamp int64   // the time the transaction was created (in Unix time)
-	Signature string  // the digital signature of the transaction
+	Hash        string
+	fromAddress string  // the address of the sender
+	toAddress   string  // the address of the recipient
+	Amount      float64 // the amount being transferred
+	Timestamp   int64   // the time the transaction was created (in Unix time)
+	Signature   string  // the digital signature of the transaction
 }
 
-func NewTransaction(sender *string, recipient string, amount float64) *Transaction {
-	return &Transaction{
-		Sender:    sender,
-		Recipient: recipient,
-		Amount:    amount,
-		Timestamp: time.Now().Unix(),
+func NewTransaction(fromAddress string, toAddress string, amount float64) *Transaction {
+	tx := &Transaction{
+		fromAddress: fromAddress,
+		toAddress:   toAddress,
+		Amount:      amount,
+		Timestamp:   time.Now().Unix(),
 	}
+
+	return tx
 }
 
 // getTransactionByteData returns the byte data of the transaction
 func (t *Transaction) getTransactionByteData() []byte {
-	fromAddress := *t.Sender
-	if t.Sender == nil {
+	fromAddress := t.fromAddress
+	if t.fromAddress == "" {
 		fromAddress = "0"
 	}
-	return []byte(fromAddress + t.Recipient + strconv.FormatFloat(t.Amount, 'f', -1, 64) + strconv.FormatInt(t.Timestamp, 10))
+
+	return []byte(fromAddress + t.toAddress + strconv.FormatFloat(t.Amount, 'f', -1, 64) + strconv.FormatInt(t.Timestamp, 10))
 }
 
 // calculateHash calculates the hash of the transaction
-func (t *Transaction) calculateHash() []byte {
-	hash := sha256.Sum256(t.getTransactionByteData())
-	return hash[:]
+func (t *Transaction) calculateHash() common.Hash {
+	hash := crypto.Keccak256Hash(t.getTransactionByteData())
+	return hash
 }
 
 // signTransaction signs the transaction with the private key
-func (t *Transaction) signTransaction(privateKey ecdsa.PrivateKey) error {
-	pubKey := privateKey.Public().(*ecdsa.PublicKey)
-	if !pubKey.Equal(t.Sender) {
-		return fmt.Errorf("you cannot sign transactions for other wallets")
+func (t *Transaction) signTransaction(privateKeyHex string) error {
+
+	privateKey, err := crypto.HexToECDSA(privateKeyHex)
+	if err != nil {
+		log.Printf("Error HexToECDSA private key: %v", err)
+		return err
 	}
 
 	hashTx := t.calculateHash()
 	// Sign the hashed message using the private key
-	signature, err := privateKey.Sign(rand.Reader, hashTx, nil)
+	signature, err := crypto.Sign(hashTx.Bytes(), privateKey)
 	if err != nil {
 		return err
 	}
 
-	// Encode the signature in DER format
-	der, err := asn1.Marshal(signature)
-	if err != nil {
-		return err
-	}
+	t.Signature = hexutil.Encode(signature)
 
-	t.Signature = string(der)
+	log.Printf("Transaction signed successfully")
 	return err
 }
 
 // isValid checks if the signature is valid
 func (t *Transaction) isValid() bool {
-	fromAddress := *t.Sender
-	if t.Sender == nil {
+	fromAddress := t.fromAddress
+	if t.fromAddress == "" {
 		fromAddress = "0"
+		return true
 	}
 
-	// Decode the signature from DER format
-	var decodedSignature struct {
-		R, S *big.Int
-	}
-
-	_, err := asn1.Unmarshal([]byte(t.Signature), &decodedSignature)
+	signature, err := hexutil.Decode(t.Signature)
 	if err != nil {
+		log.Printf("Error decoding signature: %v", err)
 		return false
 	}
 
-	pubKey, err := GetPublicKeyFromString(fromAddress)
+	hashTx := t.calculateHash()
+	recoveredPublicKeyBytes, err := crypto.Ecrecover(hashTx[:], signature)
+
+	// Create an ECDSA public key from the raw bytes using btcec library
+	ecdsaPublicKey, _ := btcec.ParsePubKey(recoveredPublicKeyBytes)
+
+	// Compress the ECDSA public key to its 33-byte format
+	compressedPubKey := ecdsaPublicKey.SerializeCompressed()
+
+	pubKey, err := crypto.DecompressPubkey(compressedPubKey)
 	if err != nil {
+		log.Printf("DecompressPubkey err:%v\n", err)
 		return false
 	}
 
-	valid := ecdsa.Verify(pubKey, t.calculateHash(), decodedSignature.R, decodedSignature.S)
+	recoveredAddress := crypto.PubkeyToAddress(*pubKey).String()
+
+	log.Println("recoveredAddress", recoveredAddress)
+	if fromAddress == recoveredAddress {
+		fmt.Println("Public key recovered successfully")
+	} else {
+		fmt.Println("Failed to recover public key")
+		return false
+	}
+
+	signatureNoRecoverID := signature[:len(signature)-1] // remove recovery id
+	valid := crypto.VerifySignature(recoveredPublicKeyBytes, hashTx.Bytes(), signatureNoRecoverID)
 	return valid
 }
-
-func GetPublicKeyFromString(keyStr string) (*ecdsa.PublicKey, error) {
-	// Decode the string into a byte array
-	keyBytes, _ := pem.Decode([]byte(keyStr))
-	if keyBytes == nil {
-		return nil, errors.New("invalid key string")
-	}
-
-	// Parse the byte array into a certificate
-	cert, err := x509.ParseCertificate(keyBytes.Bytes)
-	if err != nil {
-		return nil, err
-	}
-
-	// Extract the public key from the certificate
-	pubKey, ok := cert.PublicKey.(*ecdsa.PublicKey)
-	if !ok {
-		return nil, errors.New("failed to extract public key")
-	}
-
-	return pubKey, nil
-}
-
