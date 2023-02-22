@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -100,11 +99,9 @@ func (t *Transaction) isValid() bool {
 
 	recoveredAddress := crypto.PubkeyToAddress(*pubKey).String()
 
-	log.Println("recoveredAddress", recoveredAddress)
 	if fromAddress == recoveredAddress {
-		fmt.Println("Public key recovered successfully")
 	} else {
-		fmt.Println("Failed to recover public key")
+		log.Println("Failed to recover public key")
 		return false
 	}
 
